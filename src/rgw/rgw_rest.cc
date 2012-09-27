@@ -105,6 +105,55 @@ void dump_etag(struct req_state *s, const char *etag)
     CGI_PRINTF(s,"ETag: \"%s\"\n", etag);
 }
 
+void dump_pair(struct req_state *s, const char *key, const char *value)
+{
+  if ( (strlen(key) > 0) && (strlen(value) > 0))
+    CGI_PRINTF(s,"%s: %s\n", key, value);
+}
+
+void dump_bucket_from_state(struct req_state *s)
+{
+  if (!s->bucket_name_str.empty())
+    CGI_PRINTF(s,"Bucket: \"%s\"\n", s->bucket_name_str.c_str());
+}
+
+void dump_object_from_state(struct req_state *s)
+{
+  if (!s->object_str.empty())
+    CGI_PRINTF(s,"Key: \"%s\"\n", s->object_str.c_str());
+}
+
+void dump_uri_from_state(struct req_state *s)
+{
+  if (strcmp(s->request_uri.c_str(), "/") == 0) {
+
+    string location = "http://";
+    location += s->env->get("SERVER_NAME");
+    if (!location.empty()) {
+      location += "/";
+      if (!s->bucket_name_str.empty()) {
+        location += s->bucket_name_str;
+        location += "/";
+        if (!s->object_str.empty()) {
+          location += s->object_str;
+          CGI_PRINTF(s,"Location: %s\n", location.c_str());
+        }
+      }
+    }
+  }
+  else {
+    CGI_PRINTF(s,"Location: \"%s\"\n", s->request_uri.c_str());
+  }
+}
+
+void dump_redirect(struct req_state *s, const char *url)
+{
+  if (strlen(url) > 0) {
+    dump_errno(s, 301);
+    CGI_PRINTF(s,"Location: %s\n", url);
+  }
+}
+
 void dump_last_modified(struct req_state *s, time_t t)
 {
 
@@ -211,6 +260,36 @@ void dump_range(struct req_state *s, uint64_t ofs, uint64_t end, uint64_t total)
   CGI_PRINTF(s,"Content-Range: bytes %s\n", range_buf);
 }
 
+bool is_valid_url(const char *url)
+{
+  bool is_valid = false;
+  size_t pos;
+  string url_string = url;
+  string valid_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  valid_chars += "abcdefghijklmnopqrstuvwxyz";
+  valid_chars += "0123456789-._~:/?#";
+
+  pos = url_string.find_first_not_of(valid_chars);
+  if (pos != string::npos)
+    return false;
+
+  if (strncasecmp(url_string.c_str(), "HTTP", 4) == 0)
+    is_valid = true;
+
+  if (strncasecmp(url_string.c_str(), "WWW", 3) == 0)
+    is_valid = true;
+
+  pos = url_string.find_last_of('.');
+  string domain_string;
+  if (pos != string::npos)
+    domain_string = url_string.substr(pos + 1);
+
+  if (domain_string.size() > 3 || domain_string.size() < 2)
+    is_valid = false;
+
+  return is_valid;
+}
+
 int RGWGetObj_REST::get_params()
 {
   range_str = s->env->get("HTTP_RANGE");
@@ -267,6 +346,59 @@ int RGWPutObj_REST::get_data(bufferlist& bl)
 
   if (!ofs)
     supplied_md5_b64 = s->env->get("HTTP_CONTENT_MD5");
+
+  return len;
+}
+
+int RGWPostObj_REST::verify_params()
+{
+  /*  check that we have enough memory to store the object
+  note that this test isn't exact and may fail unintentionally
+  for large requests is */
+  if ((unsigned long long)content_length > RGW_MAX_PUT_SIZE)
+    return -ERR_TOO_LARGE;
+
+  return 0;
+}
+
+int RGWPostObj_REST::get_data(bufferlist& bl)
+{
+  size_t cl = 0;
+  
+  // try and prevent a partial read of the boundary
+  if (content_length - ofs > RGW_MAX_CHUNK_SIZE)
+    cl = RGW_MAX_CHUNK_SIZE;
+  else if (content_length - ofs > 0)
+    cl = (content_length - ofs);
+  else  
+    cl = RGW_MAX_CHUNK_SIZE;
+
+  bufferptr bp(cl);
+  CGI_GetStr(s, bp.c_str(), cl, len);
+
+  // resize our buffer pointer to avoid appending garbage
+  bp.set_length(len);
+
+  /* if we are at the boundary there will be two leading
+    newlines that we don't want */
+  int start = len - boundary.size() -2;
+  if (start > 0) {
+    // read in what might be a boundary
+    string test_boundary;
+    for (int i = start; i < len -2 && i > 0 ; i++) {
+      test_boundary += bp.c_str()[i];
+    }
+
+    if (strcmp(test_boundary.c_str(), boundary.c_str()) == 0 ) {
+      // kill off bothersome newlines
+      bp.set_length(start-2);
+      data_read = true;
+    }
+  }
+
+  len = bp.length();
+  bl.append(bp);
+
 
   return len;
 }

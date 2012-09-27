@@ -287,7 +287,7 @@ static int read_policy(RGWRados *store, struct req_state *s, RGWBucketInfo& buck
  * only_bucket: If true, reads the bucket ACL rather than the object ACL.
  * Returns: 0 on success, -ERR# otherwise.
  */
-static int build_policies(RGWRados *store, struct req_state *s, bool only_bucket, bool prefetch_data)
+int rgw_build_policies(RGWRados *store, struct req_state *s, bool only_bucket, bool prefetch_data)
 {
   int ret = 0;
   string obj_str;
@@ -877,6 +877,20 @@ int RGWPutObj::verify_permission()
   return 0;
 }
 
+int RGWPostObj::verify_permission()
+{
+  // read in the data from the POST form 
+  ret = get_params();
+  if (ret < 0)
+    return -EIO;
+
+  // bucket acl information should be set by this point
+  if (!verify_bucket_permission(s, RGW_PERM_WRITE))
+    return -EACCES;
+
+  return ret;
+}
+
 class RGWPutObjProcessor_Plain : public RGWPutObjProcessor
 {
   bufferlist data;
@@ -1165,6 +1179,23 @@ void RGWPutObj::dispose_processor(RGWPutObjProcessor *processor)
   delete processor;
 }
 
+RGWPutObjProcessor *RGWPostObj::select_processor()
+{
+  RGWPutObjProcessor *processor;
+
+    if (content_length <= RGW_MAX_CHUNK_SIZE)
+      processor = new RGWPutObjProcessor_Plain();
+    else
+      processor = new RGWPutObjProcessor_Atomic();
+
+  return processor;
+}
+
+void RGWPostObj::dispose_processor(RGWPutObjProcessor *processor)
+{
+  delete processor;
+}
+
 void RGWPutObj::execute()
 {
   RGWPutObjProcessor *processor = NULL;
@@ -1286,6 +1317,83 @@ done:
   send_response();
   return;
 }
+
+
+void RGWPostObj::execute()
+{
+  RGWPutObjProcessor *processor = NULL;
+  char calc_md5[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 1];
+  unsigned char m[CEPH_CRYPTO_MD5_DIGESTSIZE];
+  MD5 hash;
+  bufferlist bl, aclbl;
+  map<string, bufferlist> attrs;
+  int len;
+
+  if (data_pending) {
+    ret = verify_params();
+    if (ret < 0)
+      goto done;
+
+    processor = select_processor();
+
+    ret = processor->prepare(store, s);
+    if (ret < 0)
+      goto done;
+
+    do {
+       bufferlist data;
+       len = get_data(data);
+
+       if (len < 0) {
+         ret = len;
+         goto done;
+       }
+
+       if (!len)
+         break;
+
+       void *handle;
+       const unsigned char *data_ptr = (const unsigned char *)data.c_str();
+
+       ret = processor->handle_data(data, ofs, &handle);
+       if (ret < 0)
+         goto done;
+
+       hash.Update(data_ptr, len);
+
+       ret = processor->throttle_data(handle);
+       if (ret < 0)
+         goto done;
+
+       ofs += len;
+     } while (len > 0 && !data_read);
+
+    s->obj_size = ofs;
+
+    hash.Final(m);
+    buf_to_hex(m, CEPH_CRYPTO_MD5_DIGESTSIZE, calc_md5);
+
+    policy.encode(aclbl);
+    etag = calc_md5;
+
+    bl.append(etag.c_str(), etag.size() + 1);
+    attrs[RGW_ATTR_ETAG] = bl;
+    attrs[RGW_ATTR_ACL] = aclbl;
+
+    if (form_param.count("Content-Type")) {
+      bl.clear();
+      bl.append(form_param["Content-Type"].c_str(), form_param["Content-Type"].size() + 1);
+      attrs[RGW_ATTR_CONTENT_TYPE] = bl;
+    }
+
+    ret = processor->complete(etag, attrs);
+  }
+
+done:
+  dispose_processor(processor);
+  send_response();
+}
+
 
 int RGWPutMetadata::verify_permission()
 {
@@ -2093,7 +2201,7 @@ int RGWHandler::init(RGWRados *_store, struct req_state *_s, FCGX_Request *fcgx)
 
 int RGWHandler::do_read_permissions(RGWOp *op, bool only_bucket)
 {
-  int ret = build_policies(store, s, only_bucket, op->prefetch_data());
+  int ret = rgw_build_policies(store, s, only_bucket, op->prefetch_data());
 
   if (ret < 0) {
     ldout(s->cct, 10) << "read_permissions on " << s->bucket << ":" <<s->object_str << " only_bucket=" << only_bucket << " ret=" << ret << dendl;

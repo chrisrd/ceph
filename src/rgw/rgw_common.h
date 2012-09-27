@@ -91,6 +91,11 @@ using ceph::crypto::MD5;
   state->bytes_received += olen; \
 } while (0)
 
+#define CGI_GetLine(state, buf, buf_len) do { \
+  char *ochar = FCGX_GetLine(buf, buf_len, state->fcgx->in); \
+  state->bytes_received += sizeof(ochar); \
+} while (0)
+
 #define STATUS_CREATED           1900
 #define STATUS_ACCEPTED          1901
 #define STATUS_NO_CONTENT        1902

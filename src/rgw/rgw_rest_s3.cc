@@ -20,6 +20,34 @@
 
 using namespace ceph::crypto;
 
+void dump_common_s3_headers(struct req_state *s, const char *etag,
+                            size_t content_len, const char *conn_status)
+{
+  // how many elements do we expect to include in the response
+  unsigned int expected_var_len = 4;
+  map<string, string> head_var;
+
+  utime_t date = ceph_clock_now(s->cct);
+  if (!date.is_zero()) {
+    char buf[TIME_BUF_SIZE];
+    date.sprintf(buf, TIME_BUF_SIZE);
+    head_var["date"] = buf;
+  }
+
+  head_var["etag"] = etag;
+  head_var["conn_stat"] = conn_status;
+  head_var["server"] = s->env->get("HTTP_HOST");
+
+  // if we have all the variables we want go ahead and dump
+  if (head_var.size() == expected_var_len) {
+    dump_pair(s, "Date", head_var["date"].c_str());
+    dump_etag(s, head_var["etag"].c_str());
+    dump_content_length(s, content_len);
+    dump_pair(s, "Connection", head_var["conn_stat"].c_str());
+    dump_pair(s, "Server", head_var["server"].c_str());
+  }
+}
+
 void list_all_buckets_start(struct req_state *s)
 {
   s->formatter->open_array_section_in_ns("ListAllMyBucketsResult",
@@ -300,6 +328,217 @@ void RGWPutObj_REST_S3::send_response()
   dump_errno(s);
   end_header(s);
 }
+
+
+int RGWPostObj_REST_S3::get_form_head()
+{
+  char *buf;
+  size_t pos;
+  string temp_line;
+  string param;
+  string old_param;
+  string param_value;
+
+  string whitespaces (" \t\f\v\n\r");
+
+  content_length = s->env->get_int("CONTENT_LENGTH", 0);
+  if (content_length == 0)
+    return -ENODATA;
+
+  header_length = -s->bytes_received;
+  
+  // get the part boundary
+  string content_string = s->env->get("CONTENT_TYPE");
+  pos = content_string.find("boundary=");
+  if (pos == string::npos)
+    return -EINVAL;
+
+  // create the boundary which marks the end of the request
+  boundary = "--";
+  boundary += content_string.substr(pos+9);
+  boundary += "--";
+
+  // each part in the form begins with
+  string part_header = "Content-Disposition: form-data; name=";
+
+  // quite possibly overkill on the size
+  buf = (char *)malloc(RGW_MAX_CHUNK_SIZE + 1);
+
+  do {
+    // read a single line, exciting no?
+    CGI_GetLine(s, buf, RGW_MAX_CHUNK_SIZE);
+    temp_line = buf;
+
+    pos = temp_line.find(part_header);
+
+    if (pos != string::npos) {
+      // find the key contained in this part
+      pos = temp_line.find("name=");
+      param = temp_line.substr(pos+5);
+      old_param = param;
+
+      // trim the key a little bit
+      param.erase(0,1);
+      param.erase(param.find("\""));
+
+      // make sure to stop before reading actual data
+      if (strncmp(param.c_str(), "file",4) == 0) {
+        data_pending = true;
+
+        // look for a supplied filename
+        pos = old_param.find("filename=");
+
+        if (pos != string::npos) {
+          string temp_name = old_param.substr(pos+10);
+
+          // clean up the trailing quotation mark
+          temp_name.erase(temp_name.find("\""));
+          supplied_filename = temp_name;
+        }
+
+        // check if a key has actually been read correctly
+        pos = form_param["key"].find_last_not_of(whitespaces);
+          if (pos == string::npos)
+            form_param["key"] = supplied_filename;
+
+        // read the next two lines which don't actually contain the data
+        CGI_GetLine(s, buf, RGW_MAX_CHUNK_SIZE);
+        param_value = buf;
+
+        pos = param_value.find("Content-Type:");
+        if (pos != string::npos) {
+          param_value = param_value.substr(pos + 14);
+
+          // get rid of any trailing whitespace
+          pos = param_value.find_last_not_of(whitespaces);
+          if (pos != string::npos)
+            param_value.erase(pos+1);
+
+          form_param["Content-Type"] = param_value;
+        }
+
+        // this line will be blank
+        CGI_GetLine(s, buf, RGW_MAX_CHUNK_SIZE);
+
+        break;
+      }
+
+      // read out a boring blank line
+      CGI_GetLine(s, buf, RGW_MAX_CHUNK_SIZE);
+
+      // now read the line we actually want
+      CGI_GetLine(s, buf, RGW_MAX_CHUNK_SIZE);
+      param_value = buf;
+
+      // get rid of any trailing whitespace
+      pos = param_value.find_last_not_of(whitespaces);
+      if (pos != string::npos)
+        param_value.erase(pos+1);
+
+      if (!param.empty() && !param_value.empty()) {
+        // store the parameter, value combination
+        form_param[param] = param_value;
+      }
+    }
+    else {
+      /* we may have read to the end of the request without coming across a file part
+      if so we want to error out because no one likes infinite loops */
+      pos = temp_line.find(boundary);
+      if (pos != string::npos && !data_pending) {
+        free(buf);
+        return -ENODATA; //maybe there is a better error condition to use?
+      }
+    }
+  } while (!data_pending);
+
+  header_length += s->bytes_received;
+  content_length -= header_length;
+
+  free(buf);
+  return 0;
+}
+
+int RGWPostObj_REST_S3::get_params()
+{
+  // now get the beginning of the request, up until one line before the actual data
+  get_form_head();
+
+  // check if the browser has sent us some junk
+  string junk_string = "favicon.ico";
+  string test_string;
+
+  if (s->bucket_name_str.size() > 0 )
+    test_string = s->bucket_name;
+
+  ldout(s->cct, 0) << strcmp(junk_string.c_str(), test_string.c_str()) << dendl;
+
+  // build policies for the specified bucket and load them into the state
+  if ((s->bucket_name_str.size() == 0) ||
+      (strncmp(s->bucket_name, "favicon.ico", 11) == 0 )) {
+
+    if (form_param.count("bucket"))
+      s->bucket_name_str = form_param["bucket"];
+
+    ret = rgw_build_policies(store, s, true, false);
+    if (ret < 0)
+      ldout(s->cct, 0) << "ERROR building policy, status: " << ret << dendl;
+  }
+
+  if (form_param.count("key")) {
+    s->object_str = form_param["key"];
+  }
+  else {
+    ret = -EINVAL; // could possibly use a better error condition
+  }
+
+  // if we don't have an access policy build a policy for an anonymous user
+  RGWAccessControlPolicy_S3 s3policy(s->cct);
+  if (!form_param.count("Policy")) {
+    if (form_param.count("acl")) {
+      bool r = s3policy.create_canned(s->user.user_id, "", form_param["acl"]);
+      if (!r)
+        return -EINVAL;
+
+      policy = s3policy;
+    }
+  }
+
+  return ret;
+}
+
+void RGWPostObj_REST_S3::send_response()
+{
+  if (ret < 0)
+    set_req_state_err(s, ret);
+
+  if (form_param.count("success_action_redirect")) {
+      if (is_valid_url(form_param["success_action_redirect"].c_str())) {
+        dump_redirect(s, form_param["success_action_redirect"].c_str());
+        end_header(s, "text/plain");
+        return;
+      }
+  }
+  else if (form_param.count("success_action_status") && ret == 0) {
+    string status_string = form_param["success_action_status"];
+    int status_int;
+    if ( !(istringstream(status_string) >> status_int) )
+      status_int = 200;
+
+    dump_errno(s, status_int);
+  }
+  else {
+    dump_errno(s);
+    if (ret < 0)
+      return;
+  }
+
+  end_header(s, "text/plain");
+  dump_common_s3_headers(s, etag.c_str(), 0, "close");
+  dump_bucket_from_state(s);
+  dump_object_from_state(s);
+  dump_uri_from_state(s);
+}
+
 
 void RGWDeleteObj_REST_S3::send_response()
 {
@@ -728,6 +967,30 @@ RGWOp *RGWHandler_REST_S3::get_post_op()
   }
   else if (s->args.sub_resource_exists("delete")) {
     return new RGWDeleteMultiObj_REST_S3;
+  }
+
+  else if (s->bucket_name) {
+    // we likely have an improperly formatted POST object request
+    if (strcmp(s->bucket_name, "favicon.ico") == 0)
+      return NULL;
+
+    // merge in test for multi-object delete here
+
+    else
+      return new RGWPostObj_REST_S3;
+  }
+
+  // check if the bucket name was omitted from the url
+  else if (!s->object && !s->bucket_name) {
+    string content_type(s->content_type);
+    string content_type_head;
+    int pos = content_type.find("/");
+    if (pos < 0)
+      return NULL;
+
+    content_type_head = content_type.substr(0, pos);
+    if (strcmp(content_type_head.c_str(), "multipart") == 0)
+      return new RGWPostObj_REST_S3;
   }
 
   return NULL;

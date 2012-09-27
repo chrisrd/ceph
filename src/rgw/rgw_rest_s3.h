@@ -73,6 +73,16 @@ public:
   void send_response();
 };
 
+class RGWPostObj_REST_S3 : public RGWPostObj_REST {
+public:
+  RGWPostObj_REST_S3() {}
+  ~RGWPostObj_REST_S3() {}
+
+  int get_params();
+  void send_response();
+  int get_form_head();
+};
+
 class RGWDeleteObj_REST_S3 : public RGWDeleteObj_REST {
 public:
   RGWDeleteObj_REST_S3() {}
