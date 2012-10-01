@@ -260,36 +260,6 @@ void dump_range(struct req_state *s, uint64_t ofs, uint64_t end, uint64_t total)
   CGI_PRINTF(s,"Content-Range: bytes %s\n", range_buf);
 }
 
-bool is_valid_url(const char *url)
-{
-  bool is_valid = false;
-  size_t pos;
-  string url_string = url;
-  string valid_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  valid_chars += "abcdefghijklmnopqrstuvwxyz";
-  valid_chars += "0123456789-._~:/?#";
-
-  pos = url_string.find_first_not_of(valid_chars);
-  if (pos != string::npos)
-    return false;
-
-  if (strncasecmp(url_string.c_str(), "HTTP", 4) == 0)
-    is_valid = true;
-
-  if (strncasecmp(url_string.c_str(), "WWW", 3) == 0)
-    is_valid = true;
-
-  pos = url_string.find_last_of('.');
-  string domain_string;
-  if (pos != string::npos)
-    domain_string = url_string.substr(pos + 1);
-
-  if (domain_string.size() > 3 || domain_string.size() < 2)
-    is_valid = false;
-
-  return is_valid;
-}
-
 int RGWGetObj_REST::get_params()
 {
   range_str = s->env->get("HTTP_RANGE");

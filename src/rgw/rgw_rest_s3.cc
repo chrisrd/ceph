@@ -3,6 +3,7 @@
 
 #include "common/ceph_crypto.h"
 #include "common/Formatter.h"
+#include "common/utf8.h"
 
 #include "rgw_rest.h"
 #include "rgw_rest_s3.h"
@@ -507,11 +508,12 @@ void RGWPostObj_REST_S3::send_response()
     set_req_state_err(s, ret);
 
   if (form_param.count("success_action_redirect")) {
-      if (is_valid_url(form_param["success_action_redirect"].c_str())) {
-        dump_redirect(s, form_param["success_action_redirect"].c_str());
-        end_header(s, "text/plain");
-        return;
-      }
+    const string& success_action_redirect = form_param["success_action_redirect"];
+    if (check_utf8(success_action_redirect.c_str(), success_action_redirect.size())) {
+      dump_redirect(s, form_param["success_action_redirect"].c_str());
+      end_header(s, "text/plain");
+      return;
+    }
   }
   else if (form_param.count("success_action_status") && ret == 0) {
     string status_string = form_param["success_action_status"];
