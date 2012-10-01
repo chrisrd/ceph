@@ -151,7 +151,7 @@ base: ceph-mon ceph-osd ceph-mds \
 	ceph cephfs \
 	ceph-syn \
 	rados radosgw librados-config \
-	ceph-conf monmaptool osdmaptool crushtool ceph-authtool \
+	ceph-conf monmaptool osdmaptool crushtool jsontest ceph-authtool \
 	init-ceph mkcephfs
 
 
@@ -317,6 +317,7 @@ librgw_a_SOURCES =  \
 	rgw/rgw_acl_s3.cc \
 	rgw/rgw_acl_swift.cc \
 	rgw/rgw_xml.cc \
+	rgw/rgw_json.cc \
 	rgw/rgw_user.cc \
 	rgw/rgw_tools.cc \
 	rgw/rgw_rados.cc \
@@ -1732,6 +1733,7 @@ noinst_HEADERS = \
 	rgw/rgw_acl_s3.h\
 	rgw/rgw_acl_swift.h\
 	rgw/rgw_xml.h\
+	rgw/rgw_json.h\
 	rgw/rgw_cache.h\
 	rgw/rgw_common.h\
 	rgw/rgw_formats.h\
