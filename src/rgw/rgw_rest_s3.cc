@@ -463,31 +463,26 @@ int RGWPostObj_REST_S3::get_params()
   // now get the beginning of the request, up until one line before the actual data
   get_form_head();
 
-  // check if the browser has sent us some junk
-  string junk_string = "favicon.ico";
   string test_string;
 
   if (s->bucket_name_str.size() > 0 )
     test_string = s->bucket_name;
 
-  ldout(s->cct, 0) << strcmp(junk_string.c_str(), test_string.c_str()) << dendl;
-
   // build policies for the specified bucket and load them into the state
-  if ((s->bucket_name_str.size() == 0) ||
-      (strncmp(s->bucket_name, "favicon.ico", 11) == 0 )) {
-
+  if (s->bucket_name_str.size() == 0) {
     if (form_param.count("bucket"))
       s->bucket_name_str = form_param["bucket"];
 
     ret = rgw_build_policies(store, s, true, false);
-    if (ret < 0)
+    if (ret < 0) {
       ldout(s->cct, 0) << "ERROR building policy, status: " << ret << dendl;
+      return ret;
+    }
   }
 
   if (form_param.count("key")) {
     s->object_str = form_param["key"];
-  }
-  else {
+  } else {
     ret = -EINVAL; // could possibly use a better error condition
   }
 
