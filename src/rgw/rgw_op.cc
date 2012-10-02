@@ -882,13 +882,11 @@ int RGWPostObj::verify_permission()
   // read in the data from the POST form 
   ret = get_params();
   if (ret < 0)
-    return -EIO;
+    return -EINVAL;
 
-  // bucket acl information should be set by this point
-  if (!verify_bucket_permission(s, RGW_PERM_WRITE))
-    return -EACCES;
+  /* we'll handle permissions later in the process, as user needs to attach policy */
 
-  return ret;
+  return 0;
 }
 
 class RGWPutObjProcessor_Plain : public RGWPutObjProcessor
