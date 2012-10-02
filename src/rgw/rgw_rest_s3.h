@@ -74,13 +74,28 @@ public:
 };
 
 class RGWPostObj_REST_S3 : public RGWPostObj_REST {
+  string boundary;
+  bufferlist in_data;
+
+  int read_with_boundary(bufferlist& bl, uint64_t max, bool check_eol,
+                         bool *reached_boundary,
+			 bool *done);
+
+  int read_line(bufferlist& bl, uint64_t max,
+                bool *reached_boundary, bool *done);
+
+  int read_data(bufferlist& bl, uint64_t max, bool *reached_boundary, bool *done);
+
+  int read_form_part_header(struct req_state *s,
+                            struct form_part *part,
+                            bool *done);
 public:
   RGWPostObj_REST_S3() {}
   ~RGWPostObj_REST_S3() {}
 
   int get_params();
   void send_response();
-  int get_form_head();
+  int get_form_head() { return 0; }
 };
 
 class RGWDeleteObj_REST_S3 : public RGWDeleteObj_REST {
