@@ -379,18 +379,6 @@ string trim_quotes(const string& val)
   return s;
 }
 
-struct part_field {
-  string val;
-  map<string, string> params;
-};
-
-struct form_part {
-  string name;
-  string content_type;
-  map<string, struct part_field> fields;
-  bufferlist data;
-};
-
 /*
  * parses params in the format: 'first; param1=foo; param2=bar'
  */
@@ -408,19 +396,16 @@ static void parse_params(const string& params_str, string& first, map<string, st
 
   while (pos < (int)params_str.size()) {
     ssize_t end = params_str.find(';', pos);
-dout(0) << __FILE__ << ":" << __LINE__ << ":  params_str.substr()=" << params_str.substr(pos) << dendl;
     if (end < 0)
       end = params_str.size();
 
     string param = params_str.substr(pos, end - pos);
 
-dout(0) << __FILE__ << ":" << __LINE__ << ":  param=" << param << dendl;
     int eqpos = param.find('=');
     if (eqpos > 0) {
       string param_name = trim_whitespace(param.substr(0, eqpos));
       string val = trim_quotes(param.substr(eqpos + 1));
       params[param_name] = val;
-dout(0) << __FILE__ << ":" << __LINE__ << ":  param_name=" << param_name << " val=" << val << dendl;
     } else {
       params[trim_whitespace(param)] = "";
     }
@@ -429,7 +414,7 @@ dout(0) << __FILE__ << ":" << __LINE__ << ":  param_name=" << param_name << " va
   }
 }
 
-static int parse_part_field(const string& line, string& field_name, struct part_field& field)
+static int parse_part_field(const string& line, string& field_name, struct post_part_field& field)
 {
   int pos = line.find(':');
   if (pos < 0)
@@ -444,10 +429,19 @@ static int parse_part_field(const string& line, string& field_name, struct part_
   return 0;
 }
 
-static int index_of(bufferlist& bl, int max_len, const string& str, bool check_eol,
-                    bool *reached_boundary)
+bool is_crlf(const char *s)
 {
-  if (str.size() < 2) // we assume boundary is at least 2 chars
+  return (*s == '\r' && *(s + 1) == '\n');
+}
+
+/*
+ * find the index of the boundary, if exists, or optionally the next end of line
+ * also returns how many bytes to skip
+ */
+static int index_of(bufferlist& bl, int max_len, const string& str, bool check_crlf,
+                    bool *reached_boundary, int *skip)
+{
+  if (str.size() < 2) // we assume boundary is at least 2 chars (makes it easier with crlf checks)
     return -EINVAL;
 
   if (bl.length() < str.size())
@@ -460,39 +454,40 @@ static int index_of(bufferlist& bl, int max_len, const string& str, bool check_e
     max_len = bl.length();
 
   *reached_boundary = false;
+  *skip = 0;
 
-  bool was_eol = false;
   int i;
   for (i = 0; i < max_len; i++, buf++) {
-    bool is_eol = (buf[0] == '\n' || buf[0] == '\r');
-    if (was_eol) {
-      if (is_eol)
-        return i + 1; // skip the line feed
+    if (check_crlf &&
+        i >= 1 &&
+        is_crlf(buf - 1)) {
+        return i + 1; // skip the crlf
+    }
+    if ((i < max_len - (int)str.size() + 1) &&
+        (buf[0] == s[0] && buf[1] == s[1]) &&
+        (strncmp(buf, s, str.size()) == 0)) {
+      *reached_boundary = true;
+      *skip = str.size();
+
+      /* oh, great, now we need to swallow the preceding crlf
+       * if exists
+       */
+      if ((i >= 2) &&
+        is_crlf(buf - 2)) {
+        i -= 2;
+        *skip += 2;
+      }
       return i;
     }
-    if (i < max_len - (int)str.size() + 1) {
-      if (buf[0] == s[0] && buf[1] == s[1]) {
-        if (strncmp(buf, s, str.size()) == 0) {
-          *reached_boundary = true;
-	  return i;
-        }
-      }
-    }
-    if (check_eol && is_eol) {
-      was_eol = true;
-    }
   }
-
-  if (was_eol)
-    return i;
 
   return -1;
 }
 
-int RGWPostObj_REST_S3::read_with_boundary(bufferlist& bl, uint64_t max, bool check_eol,
+int RGWPostObj_REST_S3::read_with_boundary(bufferlist& bl, uint64_t max, bool check_crlf,
                                            bool *reached_boundary, bool *done)
 {
-  uint64_t cl = max + boundary.size();  // extra 2 chars for skipping boundary eol later
+  uint64_t cl = max + 2 + boundary.size();
 
   if (max > in_data.length()) {
     uint64_t need_to_read = cl - in_data.length();
@@ -506,47 +501,38 @@ int RGWPostObj_REST_S3::read_with_boundary(bufferlist& bl, uint64_t max, bool ch
   }
 
   *done = false;
-  int index = index_of(in_data, cl, boundary, check_eol, reached_boundary);
+  int skip;
+  int index = index_of(in_data, cl, boundary, check_crlf, reached_boundary, &skip);
   if (index >= 0)
     max = index;
-ldout(s->cct, 0) << "index_of returned max=" << max << " check_eol=" << check_eol << " reached_boundary=" << *reached_boundary << dendl;
 
   bl.substr_of(in_data, 0, max);
 
   bufferlist new_read_data;
 
   /*
-   * now we need to skip boundary for next time, also skip any eol, or
+   * now we need to skip boundary for next time, also skip any crlf, or
    * check to see if it's the last final boundary (marked with "--" at the end
    */
   if (*reached_boundary) {
     int left = in_data.length() - max;
-    if (left < (int)boundary.size() + 2) {
-      int need = boundary.size() + 2 - left;
+    if (left < skip + 2) {
+      int need = skip + 2 - left;
       bufferptr boundary_bp(need);
       int actual;
       CGI_GetStr(s, boundary_bp.c_str(), need, actual);
       in_data.append(boundary_bp);
     }
-    max += boundary.size(); // skip boundary for next time
-    bool was_eol = false;
-    const char *data = in_data.c_str();
-    for (int i = 0; i < 2; i++) { // skip up to 2 chars of eol
-      if (in_data.length() > max) {
-        if (*(data + max) == '\n' ||
-            *(data + max) == '\r') {
-          max++;
-          was_eol = true;
-        } else {
-          break;
-        }
-      }
-    }
-    if (!was_eol &&
-        in_data.length() >= max + 2) {
-      if (*(data + max) == '-' &&
-          *(data + max + 1) == '-') {
-        *done = true;
+    max += skip; // skip boundary for next time
+    if (in_data.length() >= max + 2) {
+      const char *data = in_data.c_str();
+      if (is_crlf(data + max)) {
+	max += 2;
+      } else {
+        if (*(data + max) == '-' &&
+            *(data + max + 1) == '-') {
+          *done = true;
+	}
       }
     }
   }
@@ -570,10 +556,9 @@ int RGWPostObj_REST_S3::read_data(bufferlist& bl, uint64_t max,
 }
 
 
-int RGWPostObj_REST_S3::read_form_part_header(struct form_part *part,
+int RGWPostObj_REST_S3::read_form_part_header(struct post_form_part *part,
                                               bool *done)
 {
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << dendl;
   bufferlist bl;
   bool reached_boundary;
   int r = read_line(bl, RGW_MAX_CHUNK_SIZE, &reached_boundary, done);
@@ -592,7 +577,7 @@ ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << dendl;
       return 0;
   }
 
-  do {
+  while (true) {
   /*
    * iterate through fields
    */
@@ -601,37 +586,48 @@ ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << dendl;
     if (line.empty())
       break;
 
-    ldout(s->cct, 0) << __func__ << ": bl.length()=" << bl.length() << " line=" << line << dendl;
-
-    struct part_field field;
+    struct post_part_field field;
 
     string field_name;
     r = parse_part_field(line, field_name, field);
     if (r < 0)
       return r;
 
-    ldout(s->cct, 0) << __func__ << ": parsed: field_name=" << field_name << " val=" << field.val << " params.count=" << field.params.size() << dendl;
-
     part->fields[field_name] = field;
+
+    if (field_name.compare("Content-Disposition") == 0) {
+      part->name = field.params["name"];
+    }
+
+    if (reached_boundary)
+      break;
+
     r = read_line(bl, RGW_MAX_CHUNK_SIZE, &reached_boundary, done);
-  } while (!reached_boundary && !*done);
+  }
 
   return 0;
 }
 
+bool RGWPostObj_REST_S3::part_str(const string& name, string *val)
+{
+  map<string, struct post_form_part>::iterator iter = parts.find(name);
+  if (iter == parts.end())
+    return false;
+
+  bufferlist& data = iter->second.data;
+  string str = string(data.c_str(), data.length());
+  *val = trim_whitespace(str);
+  return true;
+}
+
 int RGWPostObj_REST_S3::get_params()
 {
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << dendl;
   string temp_line;
   string param;
   string old_param;
   string param_value;
 
   string whitespaces (" \t\f\v\n\r");
-
-  content_length = s->env->get_int("CONTENT_LENGTH", 0);
-  if (content_length == 0)
-    return -ENODATA;
 
   // get the part boundary
   string content_type_str = s->env->get("CONTENT_TYPE");
@@ -640,18 +636,17 @@ ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << dendl;
 
   parse_params(content_type_str, content_type, params);
 
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " content_type_str=" << content_type_str << " content_type=" << content_type << dendl;
-
   if (content_type.compare("multipart/form-data") != 0)
     return -EINVAL;
 
-{
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " params:" << dendl;
-map<string, string>::iterator iter;
-for (iter = params.begin(); iter != params.end(); ++iter) {
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " " << iter->first << " -> " << iter->second << dendl;
-}
-}
+  if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
+    ldout(s->cct, 20) << "content_type_str=" << content_type_str << " content_type=" << content_type << dendl;
+    ldout(s->cct, 20) << " content_type params:" << dendl;
+    map<string, string>::iterator iter;
+    for (iter = params.begin(); iter != params.end(); ++iter) {
+      ldout(s->cct, 20) << " " << iter->first << " -> " << iter->second << dendl;
+    }
+  }
 
   map<string, string>::iterator iter = params.find("boundary");
   if (iter == params.end())
@@ -663,42 +658,79 @@ ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " " << iter->first << " -> " 
 
   bool done;
   do {
-    struct form_part part;
+    struct post_form_part part;
     int r = read_form_part_header(&part, &done);
     if (r < 0)
       return r;
     
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " read part header: name=" << part.name << " content_type=" << part.content_type << dendl;
-{
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " params:" << dendl;
-map<string, struct part_field>::iterator piter;
-for (piter = part.fields.begin(); piter != part.fields.end(); ++piter) {
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " val=" << piter->second.val << dendl;
-map<string, string>& params = piter->second.params;
-for (iter = params.begin(); iter != params.end(); ++iter) {
-ldout(s->cct, 0) << __FILE__ << ":" << __LINE__ << " " << iter->first << " -> " << iter->second << dendl;
-}
-}
-}
+    if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
+      ldout(s->cct, 20) << "read part header: name=" << part.name << " content_type=" << part.content_type << dendl;
+      ldout(s->cct, 20) << "params:" << dendl;
+      map<string, struct post_part_field>::iterator piter;
+      for (piter = part.fields.begin(); piter != part.fields.end(); ++piter) {
+        ldout(s->cct, 20) << "name=" << piter->first << dendl;
+        ldout(s->cct, 20) << "val=" << piter->second.val << dendl;
+        map<string, string>& params = piter->second.params;
+        for (iter = params.begin(); iter != params.end(); ++iter) {
+          ldout(s->cct, 20) << " " << iter->first << " -> " << iter->second << dendl;
+        }
+      }
+    }
+
     if (done) /* unexpected here */
       return -EINVAL;
 
+    if (part.name.compare("file") == 0) { /* beginning of data transfer */
+      parts[part.name] = part;
+      data_pending = true;
+      break;
+    }
+
+    bool boundary;
+    r = read_data(part.data, RGW_MAX_CHUNK_SIZE, &boundary, &done);
+    if (!boundary) {
+      return -EINVAL;
+    }
+    parts[part.name] = part;
+  } while (!done);
+
+  if (!part_str("key", &s->object_str))
+    return -EINVAL;
+
+  string canned_acl;
+  part_str("acl", &canned_acl);
+  
+  RGWAccessControlPolicy_S3 s3policy(s->cct);
+  ldout(s->cct, 20) << "canned_acl=" << canned_acl << dendl;
+  if (!s3policy.create_canned(s->user.user_id, "", canned_acl))
+    return -EINVAL;
+
+  policy = s3policy;
+
+  return 0;
+}
+
+int RGWPostObj_REST_S3::complete_get_params()
+{
+  bool done;
+  do {
+    struct post_form_part part;
+    int r = read_form_part_header(&part, &done);
+    if (r < 0)
+      return r;
+    
     bufferlist part_data;
     bool boundary;
     r = read_data(part.data, RGW_MAX_CHUNK_SIZE, &boundary, &done);
     if (!boundary) {
       return -EINVAL;
     }
+
+    parts[part.name] = part;
   } while (!done);
 
   return 0;
 }
-
-#if 0
-int RGWPostObj_REST_S3::complete_get_params()
-{
-}
-#endif
 
 #if 0
   // quite possibly overkill on the size
@@ -854,6 +886,28 @@ int RGWPostObj_REST_S3::get_params()
   return 0;
 }
 #endif
+
+int RGWPostObj_REST_S3::get_data(bufferlist& bl)
+{
+  bool boundary;
+  bool done;
+
+  int r = read_data(bl, RGW_MAX_CHUNK_SIZE, &boundary, &done);
+  if (r < 0)
+    return r;
+
+  if (boundary) {
+    data_pending = false;
+    r = complete_get_params();
+    if (r < 0)
+      return r;
+  }
+
+  if (done)
+    return -EINVAL;
+
+  return bl.length();
+}
 
 void RGWPostObj_REST_S3::send_response()
 {

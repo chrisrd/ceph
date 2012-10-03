@@ -1177,23 +1177,6 @@ void RGWPutObj::dispose_processor(RGWPutObjProcessor *processor)
   delete processor;
 }
 
-RGWPutObjProcessor *RGWPostObj::select_processor()
-{
-  RGWPutObjProcessor *processor;
-
-    if (content_length <= RGW_MAX_CHUNK_SIZE)
-      processor = new RGWPutObjProcessor_Plain();
-    else
-      processor = new RGWPutObjProcessor_Atomic();
-
-  return processor;
-}
-
-void RGWPostObj::dispose_processor(RGWPutObjProcessor *processor)
-{
-  delete processor;
-}
-
 void RGWPutObj::execute()
 {
   RGWPutObjProcessor *processor = NULL;
@@ -1317,6 +1300,23 @@ done:
 }
 
 
+RGWPutObjProcessor *RGWPostObj::select_processor()
+{
+  RGWPutObjProcessor *processor;
+
+  if (s->content_length <= RGW_MAX_CHUNK_SIZE)
+    processor = new RGWPutObjProcessor_Plain();
+  else
+    processor = new RGWPutObjProcessor_Atomic();
+
+  return processor;
+}
+
+void RGWPostObj::dispose_processor(RGWPutObjProcessor *processor)
+{
+  delete processor;
+}
+
 void RGWPostObj::execute()
 {
   RGWPutObjProcessor *processor = NULL;
@@ -1327,65 +1327,68 @@ void RGWPostObj::execute()
   map<string, bufferlist> attrs;
   int len;
 
-  if (data_pending) {
-    ret = verify_params();
-    if (ret < 0)
-      goto done;
+  ret = verify_params();
+  if (ret < 0)
+    goto done;
 
-    processor = select_processor();
-
-    ret = processor->prepare(store, s);
-    if (ret < 0)
-      goto done;
-
-    do {
-       bufferlist data;
-       len = get_data(data);
-
-       if (len < 0) {
-         ret = len;
-         goto done;
-       }
-
-       if (!len)
-         break;
-
-       void *handle;
-       const unsigned char *data_ptr = (const unsigned char *)data.c_str();
-
-       ret = processor->handle_data(data, ofs, &handle);
-       if (ret < 0)
-         goto done;
-
-       hash.Update(data_ptr, len);
-
-       ret = processor->throttle_data(handle);
-       if (ret < 0)
-         goto done;
-
-       ofs += len;
-     } while (len > 0 && !data_read);
-
-    s->obj_size = ofs;
-
-    hash.Final(m);
-    buf_to_hex(m, CEPH_CRYPTO_MD5_DIGESTSIZE, calc_md5);
-
-    policy.encode(aclbl);
-    etag = calc_md5;
-
-    bl.append(etag.c_str(), etag.size() + 1);
-    attrs[RGW_ATTR_ETAG] = bl;
-    attrs[RGW_ATTR_ACL] = aclbl;
-
-    if (form_param.count("Content-Type")) {
-      bl.clear();
-      bl.append(form_param["Content-Type"].c_str(), form_param["Content-Type"].size() + 1);
-      attrs[RGW_ATTR_CONTENT_TYPE] = bl;
-    }
-
-    ret = processor->complete(etag, attrs);
+  if (!verify_bucket_permission(s, RGW_PERM_WRITE)) {
+    ret = -EACCES;
+    goto done;
   }
+
+  processor = select_processor();
+
+  ret = processor->prepare(store, s);
+  if (ret < 0)
+    goto done;
+
+  while (data_pending) {
+     bufferlist data;
+     len = get_data(data);
+
+     if (len < 0) {
+       ret = len;
+       goto done;
+     }
+
+     if (!len)
+       break;
+
+     void *handle;
+     const unsigned char *data_ptr = (const unsigned char *)data.c_str();
+
+     ret = processor->handle_data(data, ofs, &handle);
+     if (ret < 0)
+       goto done;
+
+     hash.Update(data_ptr, len);
+
+     ret = processor->throttle_data(handle);
+     if (ret < 0)
+       goto done;
+
+     ofs += len;
+   }
+
+  s->obj_size = ofs;
+
+  hash.Final(m);
+  buf_to_hex(m, CEPH_CRYPTO_MD5_DIGESTSIZE, calc_md5);
+
+  policy.encode(aclbl);
+  etag = calc_md5;
+
+  bl.append(etag.c_str(), etag.size() + 1);
+  attrs[RGW_ATTR_ETAG] = bl;
+  attrs[RGW_ATTR_ACL] = aclbl;
+
+  if (form_param.count("Content-Type")) {
+    bl.clear();
+    bl.append(form_param["Content-Type"].c_str(), form_param["Content-Type"].size() + 1);
+    attrs[RGW_ATTR_CONTENT_TYPE] = bl;
+  }
+
+  ret = processor->complete(etag, attrs);
 
 done:
   dispose_processor(processor);

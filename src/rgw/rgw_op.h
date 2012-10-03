@@ -328,16 +328,12 @@ class RGWPostObj : public RGWOp {
 protected:
   int ret;
   int len;
-  int content_length;
-  int header_length;
   off_t ofs;
   const char *supplied_md5_b64;
   const char *supplied_etag;
   string etag;
   string boundary;
-  string supplied_filename;
   bool data_pending;
-  bool data_read;
   RGWAccessControlPolicy policy;
   map<string, string> form_param;
 
@@ -348,16 +344,12 @@ public:
     RGWOp::init(store, s, h);
     ret = 0;
     len = 0;
-    content_length = 0;
-    header_length = 0;
     ofs = 0;
     supplied_md5_b64 = NULL;
     supplied_etag = NULL;
     etag = "";
     boundary = "";
-    supplied_filename = "";
     data_pending = false;
-    data_read = false;
     policy.set_ctx(s->cct);
   }
 
@@ -369,7 +361,6 @@ public:
 
   virtual int get_params() = 0;
   virtual int get_data(bufferlist& bl) = 0;
-  virtual int get_form_head() = 0;
   virtual void send_response() = 0;
   virtual const char *name() { return "post_obj"; }
 };

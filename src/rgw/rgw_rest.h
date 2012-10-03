@@ -79,7 +79,6 @@ public:
   ~RGWPostObj_REST() {}
 
   virtual int verify_params();
-  int get_data(bufferlist& bl);
 };
 
 class RGWPutMetadata_REST : public RGWPutMetadata
