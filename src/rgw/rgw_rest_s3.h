@@ -85,10 +85,18 @@ struct post_form_part {
   bufferlist data;
 };
 
+struct ltstr_nocase
+{
+  bool operator()(const string& s1, const string& s2)
+  {
+    return strcasecmp(s1.c_str(), s2.c_str()) < 0;
+  }
+};
+
 class RGWPostObj_REST_S3 : public RGWPostObj_REST {
   string boundary;
   bufferlist in_data;
-  map<string, post_form_part> parts;  
+  map<string, post_form_part, ltstr_nocase> parts;  
 
   int read_with_boundary(bufferlist& bl, uint64_t max, bool check_eol,
                          bool *reached_boundary,

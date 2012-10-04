@@ -610,7 +610,7 @@ int RGWPostObj_REST_S3::read_form_part_header(struct post_form_part *part,
 
 bool RGWPostObj_REST_S3::part_str(const string& name, string *val)
 {
-  map<string, struct post_form_part>::iterator iter = parts.find(name);
+  map<string, struct post_form_part, ltstr_nocase>::iterator iter = parts.find(name);
   if (iter == parts.end())
     return false;
 
@@ -630,18 +630,18 @@ int RGWPostObj_REST_S3::get_params()
   string whitespaces (" \t\f\v\n\r");
 
   // get the part boundary
-  string content_type_str = s->env->get("CONTENT_TYPE");
-  string content_type;
+  string req_content_type_str = s->env->get("CONTENT_TYPE");
+  string req_content_type;
   map<string, string> params;
 
-  parse_params(content_type_str, content_type, params);
+  parse_params(req_content_type_str, req_content_type, params);
 
-  if (content_type.compare("multipart/form-data") != 0)
+  if (req_content_type.compare("multipart/form-data") != 0)
     return -EINVAL;
 
   if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
-    ldout(s->cct, 20) << "content_type_str=" << content_type_str << " content_type=" << content_type << dendl;
-    ldout(s->cct, 20) << " content_type params:" << dendl;
+    ldout(s->cct, 20) << "request content_type_str=" << req_content_type_str << " req_content_type=" << content_type << dendl;
+    ldout(s->cct, 20) << "request content_type params:" << dendl;
     map<string, string>::iterator iter;
     for (iter = params.begin(); iter != params.end(); ++iter) {
       ldout(s->cct, 20) << " " << iter->first << " -> " << iter->second << dendl;
@@ -697,9 +697,30 @@ int RGWPostObj_REST_S3::get_params()
   if (!part_str("key", &s->object_str))
     return -EINVAL;
 
+  part_str("Content-Type", &content_type);
+
+  map<string, struct post_form_part, ltstr_nocase>::iterator piter = parts.upper_bound(RGW_AMZ_META_PREFIX);
+  for (; piter != parts.end(); ++piter) {
+    string n = piter->first;
+    if (strncasecmp(n.c_str(), RGW_AMZ_META_PREFIX, sizeof(RGW_AMZ_META_PREFIX) - 1) != 0)
+      break;
+
+    string attr_name = RGW_ATTR_PREFIX;
+    attr_name.append(n);
+
+    /* need to null terminate it */
+    bufferlist& data = piter->second.data;
+    string str = string(data.c_str(), data.length());
+
+    bufferlist attr_bl;
+    attr_bl.append(str.c_str(), str.size() + 1);
+
+    attrs[attr_name] = attr_bl;
+  }
+
   string canned_acl;
   part_str("acl", &canned_acl);
-  
+
   RGWAccessControlPolicy_S3 s3policy(s->cct);
   ldout(s->cct, 20) << "canned_acl=" << canned_acl << dendl;
   if (!s3policy.create_canned(s->user.user_id, "", canned_acl))
@@ -758,6 +779,8 @@ void RGWPostObj_REST_S3::send_response()
 {
   if (ret < 0) {
     set_req_state_err(s, ret);
+    end_header(s, "text/plain");
+    return;
   }
 
   if (form_param.count("success_action_redirect")) {
@@ -767,16 +790,14 @@ void RGWPostObj_REST_S3::send_response()
       end_header(s, "text/plain");
       return;
     }
-  }
-  else if (form_param.count("success_action_status") && ret == 0) {
+  } else if (form_param.count("success_action_status") && ret == 0) {
     string status_string = form_param["success_action_status"];
     int status_int;
     if ( !(istringstream(status_string) >> status_int) )
       status_int = 200;
 
     dump_errno(s, status_int);
-  }
-  else {
+  } else {
     dump_errno(s);
     if (ret < 0)
       return;

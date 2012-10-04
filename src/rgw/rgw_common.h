@@ -39,10 +39,12 @@ using ceph::crypto::MD5;
 
 #define RGW_ATTR_PREFIX  "user.rgw."
 
+#define RGW_AMZ_META_PREFIX "x-amz-meta-"
+
 #define RGW_ATTR_ACL		RGW_ATTR_PREFIX "acl"
 #define RGW_ATTR_ETAG    	RGW_ATTR_PREFIX "etag"
 #define RGW_ATTR_BUCKETS	RGW_ATTR_PREFIX "buckets"
-#define RGW_ATTR_META_PREFIX	RGW_ATTR_PREFIX "x-amz-meta-"
+#define RGW_ATTR_META_PREFIX	RGW_ATTR_PREFIX RGW_AMZ_META_PREFIX
 #define RGW_ATTR_CONTENT_TYPE	RGW_ATTR_PREFIX "content_type"
 #define RGW_ATTR_ID_TAG    	RGW_ATTR_PREFIX "idtag"
 #define RGW_ATTR_SHADOW_OBJ    	RGW_ATTR_PREFIX "shadow_name"
