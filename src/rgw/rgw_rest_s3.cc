@@ -441,6 +441,9 @@ bool is_crlf(const char *s)
 static int index_of(bufferlist& bl, int max_len, const string& str, bool check_crlf,
                     bool *reached_boundary, int *skip)
 {
+  *reached_boundary = false;
+  *skip = 0;
+
   if (str.size() < 2) // we assume boundary is at least 2 chars (makes it easier with crlf checks)
     return -EINVAL;
 
@@ -452,9 +455,6 @@ static int index_of(bufferlist& bl, int max_len, const string& str, bool check_c
 
   if (max_len > (int)bl.length())
     max_len = bl.length();
-
-  *reached_boundary = false;
-  *skip = 0;
 
   int i;
   for (i = 0; i < max_len; i++, buf++) {
@@ -506,6 +506,9 @@ int RGWPostObj_REST_S3::read_with_boundary(bufferlist& bl, uint64_t max, bool ch
   if (index >= 0)
     max = index;
 
+  if (max > in_data.length())
+    max = in_data.length();
+
   bl.substr_of(in_data, 0, max);
 
   bufferlist new_read_data;
@@ -532,6 +535,7 @@ int RGWPostObj_REST_S3::read_with_boundary(bufferlist& bl, uint64_t max, bool ch
         if (*(data + max) == '-' &&
             *(data + max + 1) == '-') {
           *done = true;
+	  max += 2;
 	}
       }
     }
@@ -640,7 +644,7 @@ int RGWPostObj_REST_S3::get_params()
     return -EINVAL;
 
   if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
-    ldout(s->cct, 20) << "request content_type_str=" << req_content_type_str << " req_content_type=" << content_type << dendl;
+    ldout(s->cct, 20) << "request content_type_str=" << req_content_type_str << dendl;
     ldout(s->cct, 20) << "request content_type params:" << dendl;
     map<string, string>::iterator iter;
     for (iter = params.begin(); iter != params.end(); ++iter) {
@@ -764,33 +768,34 @@ int RGWPostObj_REST_S3::get_data(bufferlist& bl)
 
   if (boundary) {
     data_pending = false;
-    r = complete_get_params();
-    if (r < 0)
-      return r;
-  }
 
-  if (done)
-    return -EINVAL;
+    if (!done) {  /* reached end of data, let's drain the rest of the params */
+      r = complete_get_params();
+      if (r < 0)
+        return r;
+    }
+  }
 
   return bl.length();
 }
 
 void RGWPostObj_REST_S3::send_response()
 {
+  set_req_state_err(s, ret);
   if (ret < 0) {
-    set_req_state_err(s, ret);
     end_header(s, "text/plain");
     return;
   }
 
-  if (form_param.count("success_action_redirect")) {
-    const string& success_action_redirect = form_param["success_action_redirect"];
+  if (parts.count("success_action_redirect") && ret == 0) {
+    string success_action_redirect;
+    part_str("success_action_redirect", &success_action_redirect);
     if (check_utf8(success_action_redirect.c_str(), success_action_redirect.size())) {
       dump_redirect(s, form_param["success_action_redirect"].c_str());
       end_header(s, "text/plain");
       return;
     }
-  } else if (form_param.count("success_action_status") && ret == 0) {
+  } else if (parts.count("success_action_status") && ret == 0) {
     string status_string = form_param["success_action_status"];
     int status_int;
     if ( !(istringstream(status_string) >> status_int) )
@@ -802,12 +807,13 @@ void RGWPostObj_REST_S3::send_response()
     if (ret < 0)
       return;
   }
-
-  end_header(s, "text/plain");
+#if 0
   dump_common_s3_headers(s, etag.c_str(), 0, "close");
   dump_bucket_from_state(s);
   dump_object_from_state(s);
   dump_uri_from_state(s);
+#endif
+  end_header(s, "text/plain");
 }
 
 
