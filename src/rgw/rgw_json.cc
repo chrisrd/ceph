@@ -9,85 +9,83 @@
 using namespace std;
 using namespace json_spirit;
 
-bool contains_mixed_elements(Array a)
+static bool contains_mixed_elements(Array a)
 {
   int array_size = a.size();
-  int first_type;
+  if (array_size == 0)
+    return false;
 
-  if (array_size > 1) {
-    first_type = a[0].type();
-    for (int i = 1; i < array_size; i++) {
-      int test_type = a[i].type();
-      if (test_type != first_type)
-        return true;
-    }
+  int first_type = a[0].type();
+  for (int i = 1; i < array_size; i++) {
+    int test_type = a[i].type();
+    if (test_type != first_type)
+      return true;
   }
 
   return false;
 }
 
-bool has_children(Value v)
+static bool has_children(Value v)
 {
   int value_type = v.type();
 
   if (value_type == obj_type ) {
     return true;
-  } else if (value_type == array_type) {
-    Array temp_array = v.get_array();
-    int first_type;
-    Value first_value;
-
-    do {
-      if (temp_array.size() == 0)
-        return false;
-
-      /*
-       * if the array is heterogeneous then we want
-       * to stop processing now
-       */
-      if (contains_mixed_elements(temp_array))
-        return false;
-
-      first_value = temp_array[0];
-      first_type = first_value.type();
-
-      if (first_type == obj_type)
-        return true;
-      else if (first_type == array_type)
-        temp_array = first_value.get_array();
-
-    } while (first_type == array_type);
+  } else if (value_type != array_type) {
+    return false;
   }
+
+  Array temp_array = v.get_array();
+  int first_type;
+  Value first_value;
+
+  do {
+    if (temp_array.size() == 0)
+      return false;
+
+    /*
+     * if the array is heterogeneous then we want
+     * to stop processing now
+     */
+    if (contains_mixed_elements(temp_array))
+      return false;
+
+    first_value = temp_array[0];
+    first_type = first_value.type();
+
+    if (first_type == obj_type)
+      return true;
+    else if (first_type == array_type)
+      temp_array = first_value.get_array();
+
+  } while (first_type == array_type);
 
   return false;
 }
 
-JSONObjIter::
-JSONObjIter()
+JSONObjIter::JSONObjIter()
 {
 }
 
-JSONObjIter::
-~JSONObjIter()
+JSONObjIter::~JSONObjIter()
 {
 }
 
-void JSONObjIter::
-set(const JSONObjIter::map_iter_t &_cur, const JSONObjIter::map_iter_t &_end)
+void JSONObjIter::set(const JSONObjIter::map_iter_t &_cur, const JSONObjIter::map_iter_t &_last)
 {
   cur = _cur;
-  end = _end;
+  last = _last;
 }
 
-JSONObj *JSONObjIter::
-get_next()
+void JSONObjIter::operator++()
 {
-  JSONObj *obj = NULL;
-  if (cur != end) {
-    obj = cur->second;
+  if (cur != last)
     ++cur;
-  }
-  return obj;
+};
+
+JSONObj *JSONObjIter::operator*()
+{
+  return cur->second;
 };
 
 // does not work, FIXME
@@ -103,6 +101,7 @@ JSONObj::~JSONObj()
 
 void JSONObj::add_child(string el, JSONObj *obj)
 {
+  cout << "add_child: " << name << " <- " << el << endl;
   children.insert(pair<string, JSONObj *>(el, obj));
 }
 
@@ -126,28 +125,33 @@ JSONObjIter JSONObj::find(string name)
   return iter;
 }
 
-JSONObj *JSONObj::find_first(string name)
+JSONObjIter JSONObj::find_first()
+{
+  JSONObjIter iter;
+  iter.set(children.begin(), children.end());
+    cout << "count=" << children.size() << endl;
+  for (map<string, JSONObj *>:: iterator i = children.begin(); i != children.end(); ++i) {
+    cout << "child: " << i->first << endl;
+  }
+  return iter;
+}
+
+JSONObjIter JSONObj::find_first(string name)
 {
   JSONObjIter iter;
   map<string, JSONObj *>::iterator first;
   first = children.find(name);
-  if (first != children.end())
-    return first->second;
-  return NULL;
+  iter.set(first, children.end());
+  return iter;
 }
 
 /* accepts a JSON Array or JSON Object contained in
  * a JSON Spirit Value, v,  and creates a JSONObj for each
  * child contained in v
  */
-void JSONObj::handle_children(Value v)
+void JSONObj::handle_value(Value v)
 {
-  int value_type = v.type();
-  Value temp_value;
-  vector<JSONObj *> temp_children;
-
-  // do object/array specific pre-processing to populate temp_value
-  if (value_type == obj_type) {
+  if (v.type() == obj_type) {
     Object temp_obj = v.get_obj();
     for (Object::size_type i = 0; i < temp_obj.size(); i++) {
       Pair temp_pair = temp_obj[i];
@@ -157,39 +161,23 @@ void JSONObj::handle_children(Value v)
       child->init(this, temp_value, temp_name);
       add_child(temp_name, child);
     }
-  } else if (value_type == array_type) {
+  } else if (v.type() == array_type) {
     Array temp_array = v.get_array();
-    int first_type;
-    Value first_value;
+    Value value;
 
-    do {
-      if (temp_array.size() == 0)
-        return;
+    for (int j = 0; j < temp_array.size(); j++) {
+      Value cur = temp_array[j];
+      
+      string temp_name;
 
-      first_value = temp_array[0];
-      first_type = first_value.type();
-
-      if (first_type == obj_type) {
-        Object temp_obj = first_value.get_obj();
-        for (Object::size_type i = 0; i < temp_obj.size(); i++) {
-          Pair temp_pair = temp_obj[i];
-          string temp_name = temp_pair.name_;
-          Value temp_value = temp_pair.value_;
-          JSONObj *child = new JSONObj;
-          child->init(this, temp_value, temp_name);
-          add_child(temp_name, child);
-        }
-      } else if (first_type == array_type) {
-        temp_array = first_value.get_array();
+      if (cur.type() == obj_type) {
+	handle_value(cur);
+      } else {
+        JSONObj *child = new JSONObj;
+        child->init(this, cur, temp_name);
+        add_child(child->get_name(), child);
       }
-    } while (first_type == array_type);
-  }
-}
-
-void JSONObj::handle_value(Value v)
-{
-  if (has_children(v)) {
-    handle_children(v);
+    }
   }
 }
 
@@ -204,11 +192,6 @@ void JSONObj::init(JSONObj *p, Value v, string n)
   attr_map.insert(pair<string,string>(name, data_string));
 }
 
-string& JSONObj::get_data()
-{
-  return data_string;
-}
-
 JSONObj *JSONObj::get_parent()
 {
   return parent;
@@ -216,6 +199,7 @@ JSONObj *JSONObj::get_parent()
 
 bool JSONObj::is_object()
 {
+  cout << data.type() << std::endl;
   return (data.type() == obj_type);
 }
 

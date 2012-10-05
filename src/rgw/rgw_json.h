@@ -19,12 +19,19 @@ class JSONObj;
 class JSONObjIter {
   typedef map<string, JSONObj *>::iterator map_iter_t;
   map_iter_t cur;
-  map_iter_t end;
+  map_iter_t last;
+
 public:
   JSONObjIter();
   ~JSONObjIter();
   void set(const JSONObjIter::map_iter_t &_cur, const JSONObjIter::map_iter_t &_end);
-  JSONObj *get_next();
+
+  void operator++();
+  JSONObj *operator*();
+
+  bool end() {
+    return (cur == last);
+  }
 };
 
 class JSONObj
@@ -37,10 +44,6 @@ protected:
   multimap<string, JSONObj *> children;
   map<string, string> attr_map;
   void handle_value(Value v);
-  void handle_children(Value v);
-  bool is_array();
-  bool is_object();
-  vector<string> get_array_elements();
 
 public:
 
@@ -50,14 +53,20 @@ public:
 
   void init(JSONObj *p, Value v, string n);
 
-  string& get_data();
+  string& get_name() { return name; }
+  string& get_data() { return data_string; }
   JSONObj *get_parent();
   void add_child(string el, JSONObj *child);
   bool get_attr(string name, string& attr);
   JSONObjIter find(string name);
-  JSONObj *find_first(string name);
+  JSONObjIter find_first();
+  JSONObjIter find_first(string name);
 
   friend ostream& operator<<(ostream& out, JSONObj& obj); // does not work, FIXME
+
+  bool is_array();
+  bool is_object();
+  vector<string> get_array_elements();
 };
 
 class RGWJSONParser : public JSONObj
