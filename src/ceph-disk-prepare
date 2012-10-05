@@ -185,7 +185,10 @@ def prepare(
     it.
     """
     osd_uuid = str(uuid.uuid4())
+    journal_uuid = str(uuid.uuid4())
 
+    # TODO 45b0969e-9b03-4f30-b4c6-b4b80ceff106 for journal
+    # sudo ln -s /dev/disk/by-partuuid/f8ae8545-ac4a-401a-9d64-100744341e65 journal
     try:
         subprocess.check_call(
             args=[
@@ -193,6 +196,10 @@ def prepare(
                 '--zap-all',
                 '--clear',
                 '--mbrtogpt',
+                '--new=2:-2G:0',
+                '--change-name=2:ceph journal',
+                '--partition-guid=2:{journal_uuid}'.format(journal_uuid=journal_uuid),
+                '--typecode=2:45b0969e-9b03-4f30-b4c6-b4b80ceff106',
                 '--largest-new=1',
                 '--change-name=1:ceph data',
                 '--partition-guid=1:{osd_uuid}'.format(
@@ -226,6 +233,12 @@ def prepare(
 
     path = mount(dev=dev, fstype=fstype, options=mount_options)
     try:
+        os.symlink(
+            '/dev/disk/by-partuuid/{journal_uuid}'.format(
+                journal_uuid=journal_uuid,
+                ),
+            os.path.join(path, 'journal'),
+            )
         write_one_line(path, 'ceph_fsid', cluster_uuid)
         write_one_line(path, 'fsid', osd_uuid)
         write_one_line(path, 'magic', CEPH_OSD_ONDISK_MAGIC)
