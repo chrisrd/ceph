@@ -144,6 +144,7 @@ public:
   void finish(int r) {
     assert(r == 0);
     mds->server->_session_logged(session, state_seq, open, cmapv, inos, inotablev);
+    mds->sessionmap.touch_session(session);
   }
 };
 
