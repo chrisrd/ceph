@@ -2,6 +2,7 @@
 #include <errno.h>
 
 #include "rgw_policy_s3.h"
+#include "rgw_json.h"
 
 
 class RGWPolicyCondition {
@@ -117,4 +118,40 @@ bool RGWPolicy::check(RGWPolicyEnv *env)
       return false;
   }
   return true;
+}
+
+
+int RGWPolicy::from_json(bufferlist& bl)
+{
+  RGWJSONParser parser;
+
+  parser.parse(bl.c_str(), bl.length());
+
+  JSONObjIter iter = parser.find_first("conditions");
+  if (iter.end())
+    return 0;
+
+  JSONObj *obj = *iter;
+
+  iter = obj->find_first();
+  for (; !iter.end(); ++iter) {
+    JSONObj *child = *iter;
+    cout << "is_object=" << child->is_object() << endl;
+    cout << "is_array=" << child->is_array() << endl;
+    if (child->is_array()) {
+      JSONObjIter aiter = child->find_first();
+      vector<string> v;
+      int i;
+      for (i = 0; !aiter.end() && i < 3; ++aiter, ++i) {
+	JSONObj *o = *aiter;
+        v.push_back(o->get_data());
+      }
+      if (i !=3 || !aiter.end())  /* we expect exactly 3 arguments here */
+        return -EINVAL;
+      add_condition(v[0], v[1], v[2]);
+    } else {
+      add_simple_check(child->get_name(), child->get_data());
+    }
+  }
+  return 0;
 }

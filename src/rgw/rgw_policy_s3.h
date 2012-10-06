@@ -31,8 +31,11 @@ public:
   void set_expires(utime_t& e) { expires = e; }
 
   int add_condition(const std::string& op, const std::string& first, const std::string& second);
-  void add_simple_check(const std::string& var, const std::string& value);
+  void add_simple_check(const std::string& var, const std::string& value) {
+    var_checks.push_back(pair<string, string>(var, value));
+  }
 
   bool check(RGWPolicyEnv *env);
+  int from_json(bufferlist& bl);
 };
 #endif
