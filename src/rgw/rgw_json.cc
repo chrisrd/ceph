@@ -96,6 +96,11 @@ ostream& operator<<(ostream& out, JSONObj& obj) {
 
 JSONObj::~JSONObj()
 {
+  multimap<string, JSONObj *>::iterator iter;
+  for (iter = children.begin(); iter != children.end(); ++iter) {
+    JSONObj *obj = iter->second;
+    delete obj;
+  }
 }
 
 
@@ -168,11 +173,11 @@ void JSONObj::handle_value(Value v)
     for (int j = 0; j < temp_array.size(); j++) {
       Value cur = temp_array[j];
       
-      string temp_name;
-
       if (cur.type() == obj_type) {
 	handle_value(cur);
       } else {
+        string temp_name;
+
         JSONObj *child = new JSONObj;
         child->init(this, cur, temp_name);
         add_child(child->get_name(), child);
@@ -188,7 +193,10 @@ void JSONObj::init(JSONObj *p, Value v, string n)
   data = v;
 
   handle_value(v);
-  data_string =  write(v, raw_utf8);
+  if (v.type() == str_type)
+    data_string =  v.get_str();
+  else
+    data_string =  write(v, raw_utf8);
   attr_map.insert(pair<string,string>(name, data_string));
 }
 
